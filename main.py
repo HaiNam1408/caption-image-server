@@ -9,30 +9,22 @@ from werkzeug.utils import secure_filename
 from PIL import Image
 import tensorflow as tf
 from tensorflow.keras.applications.resnet50 import ResNet50, preprocess_input
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, LSTM, Embedding, Dropout, concatenate, Bidirectional, Dot, Activation, RepeatVector, Multiply, Lambda
 import h5py
 import requests
-import re
+import base64
+import io
 
-# Initialize Flask App
 app = Flask(__name__)
 api = Api(app)
 CORS(app)
 
-# Configure upload folder
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-# Model and tokenizer paths
 script_dir = os.path.dirname(__file__)
 model_path = os.path.join(script_dir, 'model', 'resnet50.weights.h5')
 tokenizer_path = os.path.join(script_dir, 'model', 'tokenizer.pkl')
 
-# Load model and tokenizer
 with h5py.File(model_path, 'r') as f:
     print(f.keys())
 
@@ -98,15 +90,18 @@ def predict_caption(model, image_features, tokenizer, max_caption_length):
             break
     return caption
 
-def generate_caption_new_image(image_name):
-    img_path = os.path.join(script_dir, UPLOAD_FOLDER, image_name)
-    image = Image.open(img_path)
-    image = load_img(img_path, target_size=(224, 224))
-    image = img_to_array(image)
+def generate_caption_new_image(image):
+    if not isinstance(image, Image.Image):
+        image = Image.open(image)
+    image = image.resize((224, 224))
+    image = np.array(image)
     image = image.reshape((1, image.shape[0], image.shape[1], image.shape[2]))
     image = preprocess_input(image)
     image_feature = extract_model.predict(image, verbose=0)
-    return predict_caption(model, image_feature, tokenizer, max_caption_length)
+    caption = predict_caption(model, image_feature, tokenizer, max_caption_length)
+    caption = caption.replace('startseq ', '').replace(' endseq', '.')
+    return caption.capitalize()
+
 
 class ImageUpload(Resource):
     def post(self):
@@ -125,21 +120,41 @@ class ImageUpload(Resource):
             return {'error': f'Prediction error: {str(e)}'}, 500
         return jsonify({'caption': caption, 'file_path': filepath})
 
+
 @app.route('/generate', methods=['POST'])
-def generate():
+def generate_combined():
     try:
-        data = {'1_image': request.form.get('1_image'),'1_tone': 'fun', '1_additionalInfo': '','1_language': 'en-US', '0': '[\"$K1\"]'}
+        image = request.form.get('1_image')
+        if not image: return jsonify({'error': 'No image data provided'}), 400
+        if ',' in image: image = image.split(',')[1]
+        try:
+            image_data = base64.b64decode(image)
+        except Exception as e:
+            return jsonify({'error': f'Base64 decoding failed: {str(e)}'}), 400
+
+        try:
+            image_file = io.BytesIO(image_data)
+            image = Image.open(image_file)
+            image.verify()
+            image = Image.open(image_file)
+        except Exception as e:
+            return jsonify({'error': f'Invalid image data: {str(e)}'}), 400
+
+        try:
+            local_caption = generate_caption_new_image(image)
+        except Exception as e:
+            return jsonify({'error': f'Prediction error: {str(e)}'}), 500
+        data = {'1_image': request.form.get('1_image'),'1_tone': 'accurate', '1_additionalInfo': '','1_language': 'en-US', '0': '[\"$K1\"]'}
         headers = {'next-action': 'c3d48a60acb61095f31e8af62b917dc2fe6d63a0'}
         target_url = 'https://imagecaptiongenerator.com/'
         response = requests.post(target_url, headers=headers,data=data)
-        try:
-            response_data = response.text
-            cleaned_captions = response_data.replace(r"^\d+\.\s*", "")
-            cleaned_captions = cleaned_captions.replace(r"[^\x20-\x7F]+", "")
-            captions = [line.strip() for line in cleaned_captions.split("\\n")[1:-1] if line.strip()]
-        except ValueError as e:
-            print("JSON Parse Error:", e)
-            return jsonify({"error": "Failed to parse response JSON", "raw_response": response.text}), 500
+
+        if response.status_code != 200:
+            return jsonify({'error': f'External API error: {response.status_code}'}), 500
+
+        captions = [' '.join(line.strip().split()[1:]) for line in response.text.split("\\n")[1:3] if line.strip()]
+
+        captions.append(local_caption)
 
         return jsonify({
             "status_code": response.status_code,
@@ -149,6 +164,8 @@ def generate():
     except Exception as e:
         print("Error:", e)
         return jsonify({"error": str(e)}), 500
+
+
 
 api.add_resource(ImageUpload, '/predict')
 
