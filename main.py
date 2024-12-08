@@ -22,10 +22,10 @@ api = Api(app)
 CORS(app)
 
 script_dir = os.path.dirname(__file__)
-model_path = os.path.join(script_dir, 'model', 'resnet50.weights.h5')
+resnet50_path = os.path.join(script_dir, 'model', 'resnet50.weights.h5')
 tokenizer_path = os.path.join(script_dir, 'model', 'tokenizer.pkl')
 
-with h5py.File(model_path, 'r') as f:
+with h5py.File(resnet50_path, 'r') as f:
     print(f.keys())
 
 max_caption_length = 34
@@ -65,7 +65,7 @@ outputs = Dense(vocab_size, activation='softmax')(decoder1)
 # Create the model
 model = Model(inputs=[inputs1, inputs2], outputs=outputs)
 model.compile(loss='categorical_crossentropy', optimizer='adam')
-model.load_weights(model_path)
+model.load_weights(resnet50_path)
 
 # Load the tokenizer
 with open(tokenizer_path, 'rb') as tokenizer_file:
@@ -108,20 +108,36 @@ class Hello(Resource):
     
 class ImageUpload(Resource):
     def post(self):
-        if 'image' not in request.files:
-            return {'error': 'No image file provided'}, 400
-        image_file = request.files['image']
-        if image_file.filename == '':
-            return {'error': 'No selected file'}, 400
-
-        filename = secure_filename(image_file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        image_file.save(filepath)
         try:
-            caption = generate_caption_new_image(filename)
+            image = request.form.get('1_image')
+            if not image: return jsonify({'error': 'No image data provided'}), 400
+            if ',' in image: image = image.split(',')[1]
+            try:
+                image_data = base64.b64decode(image)
+            except Exception as e:
+                return jsonify({'error': f'Base64 decoding failed: {str(e)}'}), 400
+
+            try:
+                image_file = io.BytesIO(image_data)
+                image = Image.open(image_file)
+                image.verify()
+                image = Image.open(image_file)
+            except Exception as e:
+                return jsonify({'error': f'Invalid image data: {str(e)}'}), 400
+
+            try:
+                captions = generate_caption_new_image(image)
+            except Exception as e:
+                return jsonify({'error': f'Prediction error: {str(e)}'}), 500
+
+            return jsonify({
+                "status_code": 200,
+                "data": [captions]
+            })
+
         except Exception as e:
-            return {'error': f'Prediction error: {str(e)}'}, 500
-        return jsonify({'caption': caption, 'file_path': filepath})
+            print("Error:", e)
+            return jsonify({"error": str(e)}), 500
 
 
 @app.route('/generate', methods=['POST'])
