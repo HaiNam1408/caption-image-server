@@ -102,7 +102,10 @@ def generate_caption_new_image(image):
     caption = caption.replace('startseq ', '').replace(' endseq', '.')
     return caption.capitalize()
 
-
+class Hello(Resource):
+    def get(self):
+        return jsonify({'status': 200, 'message': 'Hello from Flask!'})
+    
 class ImageUpload(Resource):
     def post(self):
         if 'image' not in request.files:
@@ -167,6 +170,7 @@ def generate_combined():
 
 
 
+api.add_resource(Hello, '/')
 api.add_resource(ImageUpload, '/predict')
 
 if __name__ == '__main__':
